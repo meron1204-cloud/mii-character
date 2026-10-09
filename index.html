@@ -26,18 +26,16 @@ button.action.active{border:2px solid var(--accent);background:#f0ecff;box-shado
 </script>
 </head>
 <body>
-<header><h1>わたしの3Dキャラクター</h1><p>ボタンで動きを切り替えられます · 指で回転できます</p></header>
+<header><h1>わたしの3Dキャラクター</h1><p>地面をタップすると歩きます · ドラッグで視点を回せます</p></header>
 <div id="stage"><div id="status">読み込み準備中…</div><button id="reset" type="button">正面に戻す</button></div>
 <main><div class="section-title">動きを選ぶ</div>
 <div class="grid" id="controls">
 <button class="action active" data-id="sit_idle"><span class="emoji">🪑</span><span class="label">座って待機</span></button>
 <button class="action" data-id="walk"><span class="emoji">🚶</span><span class="label">歩く</span></button>
 <button class="action" data-id="run"><span class="emoji">🏃</span><span class="label">走る</span></button>
-<button class="action" data-id="wave"><span class="emoji">👋</span><span class="label">手を振る</span></button>
 <button class="action" data-id="sleep"><span class="emoji">😴</span><span class="label">寝る</span></button>
-<button class="action" data-id="drink"><span class="emoji">🥤</span><span class="label">飲む</span></button>
 </div>
-<p class="note">最初の読み込みには少し時間がかかる場合があります。モデルを切り替えると、その動作用のGLBを読み込み直します。画面をドラッグすると向きを変え、ピンチ操作で拡大・縮小できます。動作が始まらない場合は、ページをインターネットに接続した状態で開いてください。</p>
+<p class="note">地面をタップすると、その場所まで歩きます。画面をドラッグすると視点を回し、ピンチ操作で拡大・縮小できます。最初に使う動きは読み込みに時間がかかる場合があります。</p>
 </main>
 <script type="module">
 import * as THREE from 'three';
@@ -54,8 +52,12 @@ const controls=new OrbitControls(camera,renderer.domElement); controls.target.se
 const loader=new GLTFLoader(); let current=null,mixer=null,clock=new THREE.Clock(),loadToken=0;
 const loadedModels=new Map();
 const motions={
-sit_idle:{file:'sit_idle.glb',label:'座って待機'},walk:{file:'walk.glb',label:'歩く'},run:{file:'run.glb',label:'走る'},wave:{file:'wave.glb',label:'手を振る'},sleep:{file:'sleep.glb',label:'寝る'},drink:{file:'drink.glb',label:'飲む'}
+sit_idle:{file:'sit_idle.glb',label:'座って待機'},walk:{file:'walk.glb',label:'歩く'},run:{file:'run.glb',label:'走る'},sleep:{file:'sleep.glb',label:'寝る'}
 };
+const ground=new THREE.Plane(new THREE.Vector3(0,1,0),0);
+const raycaster=new THREE.Raycaster(), pointer=new THREE.Vector2();
+let walkTarget=null, moving=false, idleId='sit_idle';
+let lastTapTime=0, downX=0, downY=0;
 function frameModel(root){
  const box=new THREE.Box3().setFromObject(root); const size=box.getSize(new THREE.Vector3()); const center=box.getCenter(new THREE.Vector3());
  root.position.x-=center.x; root.position.z-=center.z; root.position.y-=box.min.y;
@@ -63,7 +65,7 @@ function frameModel(root){
  camera.position.set(0,height*.62,distance); camera.near=Math.max(.01,height/100); camera.far=height*100; camera.updateProjectionMatrix();
  controls.target.set(0,height*.48,0); controls.update();
 }
-async function loadMotion(id){
+async function loadMotion(id, options={}){
  const token=++loadToken;
  const cached=loadedModels.has(id);
  status.textContent=cached?'切り替え中…':'初回読み込み中…';
@@ -75,15 +77,40 @@ async function loadMotion(id){
   if(current)scene.remove(current);
   if(mixer)mixer.stopAllAction(); mixer=null;
   current=gltf.scene; scene.add(current); frameModel(current);
+  if(options.position) current.position.set(options.position.x, current.position.y, options.position.z);
   if(gltf.animations && gltf.animations.length){mixer=new THREE.AnimationMixer(current); const action=mixer.clipAction(gltf.animations[0]); action.reset(); action.setLoop(THREE.LoopRepeat,Infinity); action.play();}
   status.textContent=motions[id].label+(gltf.animations?.length?' · アニメーション再生中':' · 動作データなし')+(cached?' · 読み込み済み':'');
  }catch(e){console.error(e);status.textContent='読み込みに失敗しました。フォルダ内のGLBを確認してください。'}
 }
-document.querySelectorAll('button.action').forEach(b=>b.addEventListener('click',()=>loadMotion(b.dataset.id)));
+document.querySelectorAll('button.action').forEach(b=>b.addEventListener('click',()=>{moving=false;walkTarget=null;idleId=b.dataset.id==='walk'||b.dataset.id==='run'?'sit_idle':b.dataset.id;loadMotion(b.dataset.id)}));
+// Tap/click the ground to walk to that point. Ignore gestures used to rotate the camera.
+renderer.domElement.addEventListener('pointerdown',e=>{lastTapTime=performance.now();downX=e.clientX;downY=e.clientY;});
+renderer.domElement.addEventListener('pointerup',e=>{
+ if(performance.now()-lastTapTime>350)return;
+ if(Math.hypot(e.clientX-downX,e.clientY-downY)>10)return;
+ if(controls._lastPosition && false)return;
+ const rect=renderer.domElement.getBoundingClientRect(); pointer.x=((e.clientX-rect.left)/rect.width)*2-1; pointer.y=-((e.clientY-rect.top)/rect.height)*2+1;
+ raycaster.setFromCamera(pointer,camera); const point=new THREE.Vector3();
+ if(raycaster.ray.intersectPlane(ground,point)){
+   // Ignore taps while a camera drag is underway; OrbitControls updates its pointer state.
+   walkTarget=new THREE.Vector3(point.x,0,point.z); moving=true; idleId='sit_idle';
+   if(!current || !current.userData.isWalkingModel){
+     const pos=current?current.position.clone():new THREE.Vector3();
+     loadMotion('walk',{position:pos}).then(()=>{if(current)current.userData.isWalkingModel=true;});
+   }
+   status.textContent='タップした場所へ移動中…';
+ }
+});
 document.getElementById('reset').addEventListener('click',()=>{if(current)frameModel(current)});
 function resize(){const w=stage.clientWidth,h=stage.clientHeight;camera.aspect=w/h;camera.updateProjectionMatrix();renderer.setSize(w,h)}
 window.addEventListener('resize',resize);
-renderer.setAnimationLoop(()=>{const dt=clock.getDelta();if(mixer)mixer.update(dt);controls.update();renderer.render(scene,camera)});
+renderer.setAnimationLoop(()=>{const dt=clock.getDelta();if(mixer)mixer.update(dt);
+ if(moving&&walkTarget&&current){
+   const dx=walkTarget.x-current.position.x, dz=walkTarget.z-current.position.z; const dist=Math.hypot(dx,dz);
+   if(dist<0.06){current.position.x=walkTarget.x;current.position.z=walkTarget.z;moving=false;const pos=current.position.clone();loadMotion('sit_idle',{position:pos});}
+   else {const step=Math.min(dist,dt*0.85);current.position.x+=dx/dist*step;current.position.z+=dz/dist*step;current.rotation.y=Math.atan2(dx,dz);}
+ }
+ controls.update();renderer.render(scene,camera)});
 loadMotion('sit_idle');
 </script>
 </body>
