@@ -52,6 +52,7 @@ const key=new THREE.DirectionalLight(0xffffff,2.4); key.position.set(3,5,4); sce
 const fill=new THREE.DirectionalLight(0xffffff,1.0); fill.position.set(-4,2,-3); scene.add(fill);
 const controls=new OrbitControls(camera,renderer.domElement); controls.target.set(0,0.9,0); controls.enableDamping=true; controls.dampingFactor=.07; controls.minDistance=1.2; controls.maxDistance=8; controls.maxPolarAngle=Math.PI*.92;
 const loader=new GLTFLoader(); let current=null,mixer=null,clock=new THREE.Clock(),loadToken=0;
+const loadedModels=new Map();
 const motions={
 sit_idle:{file:'sit_idle.glb',label:'座って待機'},walk:{file:'walk.glb',label:'歩く'},run:{file:'run.glb',label:'走る'},wave:{file:'wave.glb',label:'手を振る'},sleep:{file:'sleep.glb',label:'寝る'},drink:{file:'drink.glb',label:'飲む'}
 };
@@ -63,15 +64,19 @@ function frameModel(root){
  controls.target.set(0,height*.48,0); controls.update();
 }
 async function loadMotion(id){
- const token=++loadToken; status.textContent='読み込み中…';
+ const token=++loadToken;
+ const cached=loadedModels.has(id);
+ status.textContent=cached?'切り替え中…':'初回読み込み中…';
  document.querySelectorAll('button.action').forEach(b=>b.classList.toggle('active',b.dataset.id===id));
  try{
-  const gltf=await loader.loadAsync(motions[id].file); if(token!==loadToken)return;
+  let gltf=loadedModels.get(id);
+  if(!gltf){gltf=await loader.loadAsync(motions[id].file);loadedModels.set(id,gltf);}
+  if(token!==loadToken)return;
   if(current)scene.remove(current);
   if(mixer)mixer.stopAllAction(); mixer=null;
   current=gltf.scene; scene.add(current); frameModel(current);
   if(gltf.animations && gltf.animations.length){mixer=new THREE.AnimationMixer(current); const action=mixer.clipAction(gltf.animations[0]); action.reset(); action.setLoop(THREE.LoopRepeat,Infinity); action.play();}
-  status.textContent=motions[id].label+(gltf.animations?.length?' · アニメーション再生中':' · 動作データなし');
+  status.textContent=motions[id].label+(gltf.animations?.length?' · アニメーション再生中':' · 動作データなし')+(cached?' · 読み込み済み':'');
  }catch(e){console.error(e);status.textContent='読み込みに失敗しました。フォルダ内のGLBを確認してください。'}
 }
 document.querySelectorAll('button.action').forEach(b=>b.addEventListener('click',()=>loadMotion(b.dataset.id)));
